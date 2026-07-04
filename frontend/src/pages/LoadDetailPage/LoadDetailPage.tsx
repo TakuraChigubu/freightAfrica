@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
-import { MapPin, Truck, Calendar, Package, DollarSign, Clock, Phone, Mail, User, Building, TriangleAlert as AlertTriangle, Lock, ChevronLeft, Share2 } from 'lucide-react';
+import { MapPin, Truck, Calendar, Package, DollarSign, Clock, Phone, User, Building, TriangleAlert as AlertTriangle, Lock, ChevronLeft } from 'lucide-react';
 import Button from '../../components/Button';
 import { loadsApi, unlockApi } from '../../services/api';
 import type { Load, UnlockResult } from '../../types';
@@ -16,7 +16,7 @@ const LoadDetailPage: React.FC = () => {
   const [isUnlocking, setIsUnlocking] = useState(false);
   const [unlockResult, setUnlockResult] = useState<UnlockResult | null>(null);
   const [isUnlocked, setIsUnlocked] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [_error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (id) {

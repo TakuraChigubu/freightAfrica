@@ -1,5 +1,5 @@
 import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from 'axios';
-import type { ApiResponse, PaginatedResponse } from '../types';
+import type { ApiResponse, ApiErrorResponse, PaginatedResponse } from '../types';
 
 const API_BASE_URL = '/api/v1';
 
@@ -63,7 +63,8 @@ api.interceptors.response.use(
     }
 
     // Handle other errors
-    const errorMessage = error.response?.data?.error?.message ||
+    const apiError = error.response?.data as ApiErrorResponse | undefined;
+    const errorMessage = apiError?.error?.message ||
       error.message ||
       'An unexpected error occurred';
 
@@ -219,3 +220,6 @@ export const adminApi = {
 };
 
 export default api;
+
+
+export { authApi }
