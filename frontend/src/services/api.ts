@@ -220,6 +220,3 @@ export const adminApi = {
 };
 
 export default api;
-
-
-export { authApi }
