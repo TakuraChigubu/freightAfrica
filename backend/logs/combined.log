@@ -1,0 +1,2 @@
+{"level":"info","message":"Starting database migrations...","service":"freightlink-africa","timestamp":"2026-07-08T19:38:13.918Z"}
+{"code":"ECONNREFUSED","duration":"45ms","error":"connect ECONNREFUSED 127.0.0.1:5432","level":"error","message":"Database query error","params":"none","query":"\n    CREATE TABLE IF NOT EXISTS migrations (\n      id SERIAL PRIMARY KEY,\n      filename VARCHAR(255) NOT NULL UNIQUE,\n      executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n      checksum VARCHAR(64)\n","service":"freightlink-africa","timestamp":"2026-07-08T19:38:13.966Z"}

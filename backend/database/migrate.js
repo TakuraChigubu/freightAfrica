@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 import config from '../config/index.js';
 import { query, closePool } from './pool.js';
 import logger from '../utils/logger.js';
@@ -49,7 +50,6 @@ const getMigrationFiles = () => {
  * Calculate checksum for a file
  */
 const calculateChecksum = (content) => {
-  const crypto = await import('crypto');
   return crypto.createHash('sha256').update(content).digest('hex');
 };
 

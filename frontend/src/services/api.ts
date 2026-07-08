@@ -1,7 +1,10 @@
 import axios, { AxiosError, AxiosInstance, InternalAxiosRequestConfig } from 'axios';
 import type { ApiResponse, ApiErrorResponse, PaginatedResponse } from '../types';
 
-const API_BASE_URL = '/api/v1';
+// Use production API URL if available, otherwise relative path for proxy
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
+  ? `${import.meta.env.VITE_API_BASE_URL}/api/v1`
+  : '/api/v1';
 
 // Create axios instance
 const api: AxiosInstance = axios.create({

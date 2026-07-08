@@ -1,0 +1,167 @@
+# Render Blueprint for FreightLink Africa
+# https://render.com/docs/blueprint-spec
+
+services:
+  # Backend API Service
+  - type: web
+    name: freightlink-api
+    runtime: node
+    region: oregon # or singapore for Africa proximity
+    plan: starter # upgrade to standard/pro for production
+    buildCommand: cd backend && npm install
+    startCommand: npm run migrate && npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    branch: main
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5000
+      - key: APP_NAME
+        value: FreightLink Africa
+      - key: API_VERSION
+        value: v1
+      - key: FRONTEND_URL
+        fromService:
+          type: web
+          name: freightlink-web
+          property: url
+      # Database - Use Supabase PostgreSQL
+      - key: DB_HOST
+        sync: false # Set manually in Render dashboard
+      - key: DB_PORT
+        value: 5432
+      - key: DB_NAME
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_MAX_CONNECTIONS
+        value: 20
+      - key: DB_IDLE_TIMEOUT
+        value: 30000
+      - key: DB_CONNECTION_TIMEOUT
+        value: 2000
+      # Redis - Use Render Redis or external
+      - key: REDIS_HOST
+        fromService:
+          type: redis
+          name: freightlink-redis
+          property: host
+      - key: REDIS_PORT
+        fromService:
+          type: redis
+          name: freightlink-redis
+          property: port
+      # JWT Secrets
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 15m
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_EXPIRES_IN
+        value: 7d
+      - key: JWT_ISSUER
+        value: freightlink.africa
+      # Google OAuth
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false # Set to https://your-api-url/api/v1/auth/google/callback
+      # Gemini AI
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-1.5-flash
+      - key: GEMINI_MAX_RETRIES
+        value: 3
+      # Paynow Payment Gateway
+      - key: PAYNOW_INTEGRATION_ID
+        sync: false
+      - key: PAYNOW_INTEGRATION_KEY
+        sync: false
+      - key: PAYNOW_SANDBOX
+        value: false
+      - key: PAYNOW_RESULT_URL
+        sync: false
+      - key: PAYNOW_RETURN_URL
+        sync: false
+      # WhatsApp Business API
+      - key: WHATSAPP_API_VERSION
+        value: v18.0
+      - key: WHATSAPP_PHONE_NUMBER_ID
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: WHATSAPP_WEBHOOK_VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_BUSINESS_ACCOUNT_ID
+        sync: false
+      # Security
+      - key: BCRYPT_ROUNDS
+        value: 12
+      - key: RATE_LIMIT_WINDOW_MS
+        value: 900000
+      - key: RATE_LIMIT_MAX
+        value: 100
+      - key: CORS_ORIGINS
+        fromService:
+          type: web
+          name: freightlink-web
+          property: url
+      # Pricing
+      - key: BASE_UNLOCK_PRICE
+        value: 2.00
+      - key: WHATSAPP_CONVERSATION_COST
+        value: 0.04
+      - key: GEMINI_COST_PER_REQUEST
+        value: 0.001
+      - key: PAYNOW_FEE_PERCENT
+        value: 3.5
+      - key: INFRASTRUCTURE_ALLOCATION
+        value: 0.10
+      - key: EXPECTED_CONVERSION_RATE
+        value: 0.10
+      # Logging
+      - key: LOG_LEVEL
+        value: info
+      - key: LOG_FORMAT
+        value: json
+
+  # Frontend Static Site
+  - type: web
+    name: freightlink-web
+    runtime: static
+    region: oregon
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: frontend/dist
+    pullRequestPreviewsEnabled: true
+    autoDeploy: true
+    branch: main
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://freightlink-api.onrender.com/api/:splat
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: freightlink-api
+          property: url
+      - key: VITE_APP_NAME
+        value: FreightLink Africa
+
+  # Redis Instance
+  - type: redis
+    name: freightlink-redis
+    region: oregon
+    plan: starter
+    maxmemoryPolicy: allkeys-lru
