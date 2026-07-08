@@ -4,6 +4,7 @@ import { query, transaction } from '../database/pool.js';
 import * as loadModel from '../models/load.js';
 import * as walletService from './wallet.js';
 import * as notificationService from './notification.js';
+import { PRICING_CONFIG, getAvailableBundles, getBundleById, validatePricing } from './pricing.js';
 import logger from '../utils/logger.js';
 import {
   BadRequestError,
@@ -17,8 +18,95 @@ import {
 
 /**
  * Contact Unlock Service
- * Handles paid broker contact unlocks
+ * Handles paid broker contact unlocks with bundle pricing
  */
+
+/**
+ * Get user's available unlock credits
+ */
+export const getUserCredits = async (userId: string): Promise<{
+  totalCredits: number;
+  activeBundles: Array<{
+    id: string;
+    bundleType: string;
+    remaining: number;
+    expiresAt: Date | null;
+  }>;
+}> => {
+  const result = await query(`
+    SELECT
+      id,
+      bundle_type,
+      unlocks_remaining,
+      expires_at
+    FROM unlock_bundles
+    WHERE user_id = $1
+      AND is_active = TRUE
+      AND unlocks_remaining > 0
+      AND (expires_at IS NULL OR expires_at > NOW())
+    ORDER BY expires_at NULLS LAST, created_at ASC
+  `, [userId]);
+
+  const activeBundles = result.rows.map(row => ({
+    id: row.id,
+    bundleType: row.bundle_type,
+    remaining: row.unlocks_remaining,
+    expiresAt: row.expires_at ? new Date(row.expires_at) : null,
+  }));
+
+  const totalCredits = activeBundles.reduce((sum, b) => sum + b.remaining, 0);
+
+  return { totalCredits, activeBundles };
+};
+
+/**
+ * Consume one unlock credit from user's bundles
+ * Uses FIFO: oldest bundles consumed first
+ */
+export const consumeCredit = async (userId: string): Promise<{
+  success: boolean;
+  bundleId: string;
+  bundleType: string;
+  remainingAfter: number;
+} | null> => {
+  // Get oldest bundle with credits
+  const result = await query(`
+    SELECT id, bundle_type, unlocks_remaining
+    FROM unlock_bundles
+    WHERE user_id = $1
+      AND is_active = TRUE
+      AND unlocks_remaining > 0
+      AND (expires_at IS NULL OR expires_at > NOW())
+    ORDER BY expires_at NULLS LAST, created_at ASC
+    LIMIT 1
+    FOR UPDATE
+  `, [userId]);
+
+  if (result.rows.length === 0) {
+    return null;
+  }
+
+  const bundle = result.rows[0];
+
+  // Decrement and check if fully consumed
+  const updateResult = await query(`
+    UPDATE unlock_bundles
+    SET
+      unlocks_remaining = unlocks_remaining - 1,
+      unlocks_used = unlocks_used + 1,
+      fully_consumed_at = CASE WHEN unlocks_remaining = 1 THEN NOW() ELSE NULL END,
+      is_active = CASE WHEN unlocks_remaining = 1 THEN FALSE ELSE TRUE END
+    WHERE id = $1
+    RETURNING unlocks_remaining
+  `, [bundle.id]);
+
+  return {
+    success: true,
+    bundleId: bundle.id,
+    bundleType: bundle.bundle_type,
+    remainingAfter: updateResult.rows[0].unlocks_remaining,
+  };
+};
 
 /**
  * Calculate cost floor for unlock pricing
@@ -34,41 +122,234 @@ export const calculateUnlockPrice = (): {
   };
   pricingByConversion: Record<string, number>;
 } => {
+  const bundles = getAvailableBundles();
+  const defaultBundle = bundles.find(b => b.isDefault) || bundles[1]; // bundle_3
+
   const costs = {
-    whatsappConversation: config.pricing.whatsappConversationCost,
-    geminiParsing: config.pricing.geminiCostPerRequest,
-    infrastructure: config.pricing.infrastructureAllocation,
-    paynowFee: 0, // Calculated as percentage
+    whatsappConversation: PRICING_CONFIG.COSTS.WHATSAPP_CONVERSATION,
+    geminiParsing: calculateGeminiCost(),
+    infrastructure: PRICING_CONFIG.COSTS.INFRASTRUCTURE,
+    paynowFee: PRICING_CONFIG.PAYNOW.FLAT_FEE,
   };
 
   // Calculate prices at different conversion rates
   const pricingByConversion: Record<string, number> = {};
-  const conversionRates = [0.02, 0.05, 0.10, 0.15, 0.20];
+  const conversionRates = [0.05, 0.10, 0.15, 0.20];
 
   for (const rate of conversionRates) {
-    const paynowFee = config.pricing.baseUnlockPrice * (config.pricing.paynowFeePercent / 100);
-    const totalCost = costs.whatsappConversation + costs.geminiParsing + paynowFee + costs.infrastructure;
+    const totalCost = costs.whatsappConversation + costs.geminiParsing + costs.infrastructure;
     const priceAtRate = totalCost / rate;
 
     pricingByConversion[`${(rate * 100)}%`] = Math.max(
-      config.pricing.baseUnlockPrice,
+      PRICING_CONFIG.MIN_PRICE_FOR_ACCEPTABLE_FEE_RATIO,
       Math.ceil(priceAtRate * 100) / 100
     );
   }
 
   return {
-    basePrice: config.pricing.baseUnlockPrice,
+    basePrice: defaultBundle.pricePerUnlock,
     costs,
     pricingByConversion,
   };
 };
 
 /**
- * Get effective unlock price for user
+ * Calculate Gemini cost per request
  */
-export const getUnlockPrice = async (userId?: string): Promise<number> => {
-  // TODO: Check user subscription for discounted rates
-  return config.pricing.baseUnlockPrice;
+const calculateGeminiCost = (): number => {
+  const { GEMINI_FLASH_INPUT, GEMINI_FLASH_OUTPUT, GEMINI_AVG_TOKENS } = PRICING_CONFIG.COSTS;
+  const inputTokens = GEMINI_AVG_TOKENS * 0.6;
+  const outputTokens = GEMINI_AVG_TOKENS * 0.4;
+  return (inputTokens / 1000 * GEMINI_FLASH_INPUT) + (outputTokens / 1000 * GEMINI_FLASH_OUTPUT);
+};
+
+/**
+ * Get effective unlock price for user (now returns bundle info)
+ */
+export const getUnlockPrice = async (userId?: string): Promise<{
+  hasCredits: boolean;
+  credits: number;
+  bundles: ReturnType<typeof getAvailableBundles>;
+  recommendedBundle: any;
+}> => {
+  let credits = 0;
+  let hasCredits = false;
+
+  if (userId) {
+    const userCredits = await getUserCredits(userId);
+    credits = userCredits.totalCredits;
+    hasCredits = credits > 0;
+  }
+
+  const bundles = getAvailableBundles();
+  const recommendedBundle = bundles.find(b => b.isDefault) || bundles[1];
+
+  return {
+    hasCredits,
+    credits,
+    bundles,
+    recommendedBundle,
+  };
+};
+
+/**
+ * Purchase unlock bundle
+ */
+export const purchaseBundle = async (data: {
+  userId: string;
+  bundleType: string;
+  paymentMethod: 'ecocash' | 'onemoney' | 'zipit' | 'card' | 'wallet';
+  phoneNumber?: string;
+  idempotencyKey?: string;
+  deviceFingerprint?: string;
+  ipAddress?: string;
+  userAgent?: string;
+}): Promise<{
+  bundleId: string;
+  publicId: string;
+  paymentStatus: string;
+  paymentId: string;
+  paynowPollUrl?: string;
+  paynowRedirectUrl?: string;
+}> => {
+  const { userId, bundleType, paymentMethod, phoneNumber, idempotencyKey, deviceFingerprint, ipAddress, userAgent } = data;
+
+  // Get bundle details
+  const bundle = getBundleById(bundleType);
+  if (!bundle) {
+    throw new BadRequestError('Invalid bundle type', 'INVALID_BUNDLE');
+  }
+
+  // Validate pricing against cost floor
+  const validation = validatePricing(bundle.price, bundle.unlocks);
+  if (!validation.isValid) {
+    logger.error('Pricing validation failed', { bundle: bundleType, ...validation });
+    throw new Error(`Pricing validation failed: ${validation.warning}`);
+  }
+
+  // Check for idempotent request
+  if (idempotencyKey) {
+    const existing = await query(
+      'SELECT id, public_id FROM unlock_bundles WHERE payment_id IN (SELECT id FROM payments WHERE idempotency_key = $1)',
+      [idempotencyKey]
+    );
+    if (existing.rows.length > 0) {
+      return {
+        bundleId: existing.rows[0].id,
+        publicId: existing.rows[0].public_id,
+        paymentStatus: 'confirmed',
+        paymentId: '',
+      };
+    }
+  }
+
+  // Process payment
+  if (paymentMethod === 'wallet') {
+    // Use wallet balance
+    const wallet = await walletService.getBalance(userId);
+    if (wallet.available < bundle.price) {
+      throw new InsufficientFundsError(
+        `Insufficient wallet balance. Required: $${bundle.price.toFixed(2)}, Available: $${wallet.available.toFixed(2)}`
+      );
+    }
+
+    const result = await transaction(async (client) => {
+      // Create payment
+      const paymentRes = await client.query(`
+        INSERT INTO payments (
+          user_id, amount, currency, payment_method, purpose,
+          bundle_type, unlocks_purchased, status
+        ) VALUES ($1, $2, 'USD', 'wallet', 'bundle_purchase', $3, $4, 'confirmed')
+        RETURNING id
+      `, [userId, bundle.price, bundle.id, bundle.unlocks]);
+
+      const paymentId = paymentRes.rows[0].id;
+
+      // Debit wallet
+      await client.query(`
+        UPDATE wallets
+        SET balance = balance - $1,
+            total_debited = total_debited + $1,
+            last_transaction_at = NOW()
+        WHERE user_id = $2
+      `, [bundle.price, userId]);
+
+      // Create bundle
+      const bundleRes = await client.query(`
+        INSERT INTO unlock_bundles (
+          user_id, payment_id, bundle_type, bundle_name,
+          total_unlocks, price_paid, cost_per_unlock_at_purchase,
+          unlocks_remaining, is_active
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $5, TRUE)
+        RETURNING id, public_id
+      `, [
+        userId,
+        paymentId,
+        bundle.id,
+        bundle.name,
+        bundle.unlocks,
+        bundle.price,
+        validation.costPerUnlock,
+      ]);
+
+      return { bundle: bundleRes.rows[0], paymentId };
+    });
+
+    logger.info('Bundle purchased via wallet', {
+      userId,
+      bundleType: bundle.id,
+      price: bundle.price,
+      unlocks: bundle.unlocks,
+    });
+
+    return {
+      bundleId: result.bundle.id,
+      publicId: result.bundle.public_id,
+      paymentStatus: 'confirmed',
+      paymentId: result.paymentId,
+    };
+  } else {
+    // Paynow payment
+    const { createTransaction: createPaynowTransaction } = await import('./paynow.js');
+
+    const txn = await createPaynowTransaction({
+      userId,
+      amount: bundle.price,
+      currency: 'USD',
+      purpose: 'bundle_purchase',
+      referenceId: bundle.id,
+      referenceType: 'unlock_bundle',
+      paymentMethod: paymentMethod as 'ecocash' | 'onemoney' | 'zipit' | 'card',
+      phoneNumber,
+      idempotencyKey,
+    });
+
+    // Create pending bundle (will be activated on payment)
+    await query(`
+      INSERT INTO unlock_bundles (
+        user_id, payment_id, bundle_type, bundle_name,
+        total_unlocks, price_paid, cost_per_unlock_at_purchase,
+        unlocks_remaining, is_active
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, 0, FALSE)
+    `, [
+      userId,
+      txn.paymentId,
+      bundle.id,
+      bundle.name,
+      bundle.unlocks,
+      bundle.price,
+      validation.costPerUnlock,
+    ]);
+
+    return {
+      bundleId: txn.paymentId,
+      publicId: txn.publicId,
+      paymentStatus: 'pending',
+      paymentId: txn.paymentId,
+      paynowPollUrl: txn.pollUrl,
+      paynowRedirectUrl: txn.redirectUrl,
+    };
+  }
 };
 
 /**
@@ -77,8 +358,6 @@ export const getUnlockPrice = async (userId?: string): Promise<number> => {
 export const unlockContact = async (data: {
   loadId: string;
   userId: string;
-  paymentMethod: 'wallet' | 'ecocash' | 'onemoney' | 'zipit' | 'card';
-  phoneNumber?: string;
   deviceFingerprint?: string;
   ipAddress?: string;
   userAgent?: string;
@@ -92,16 +371,9 @@ export const unlockContact = async (data: {
     brokerCompany: string;
     brokerEmail?: string;
   };
+  creditsRemaining: number;
 }> => {
-  const {
-    loadId,
-    userId,
-    paymentMethod,
-    phoneNumber,
-    deviceFingerprint,
-    ipAddress,
-    userAgent,
-  } = data;
+  const { loadId, userId, deviceFingerprint, ipAddress, userAgent } = data;
 
   // Get load
   const load = await loadModel.findById(loadId);
@@ -110,7 +382,6 @@ export const unlockContact = async (data: {
     throw new LoadNotFoundError();
   }
 
-  // Check if load is published and not expired
   if (load.status !== 'published') {
     throw new BadRequestError('This load is not available for unlock', 'LOAD_NOT_PUBLISHED');
   }
@@ -119,17 +390,15 @@ export const unlockContact = async (data: {
     throw new LoadExpiredError();
   }
 
-  // Check if user already has an active unlock for this load
+  // Check if already unlocked
   const existingUnlock = await query(`
     SELECT * FROM contact_unlocks
     WHERE user_id = $1 AND load_id = $2 AND status = 'active' AND access_expires_at > NOW()
   `, [userId, loadId]);
 
   if (existingUnlock.rows.length > 0) {
-    // Return existing unlock
     const unlock = existingUnlock.rows[0];
-    logger.info('Returning existing unlock', { userId, loadId, unlockId: unlock.id });
-
+    const credits = await getUserCredits(userId);
     return {
       unlockId: unlock.id,
       accessExpiresAt: new Date(unlock.access_expires_at),
@@ -140,194 +409,76 @@ export const unlockContact = async (data: {
         brokerCompany: unlock.broker_company,
         brokerEmail: unlock.broker_email,
       },
+      creditsRemaining: credits.totalCredits,
     };
   }
 
-  // Calculate unlock price
-  const price = await getUnlockPrice(userId);
-
-  // Process payment
-  if (paymentMethod === 'wallet') {
-    // Check wallet balance
-    const walletBalance = await walletService.getBalance(userId);
-
-    if (walletBalance.available < price) {
-      throw new InsufficientFundsError(
-        `Insufficient wallet balance. Required: $${price.toFixed(2)}, Available: $${walletBalance.available.toFixed(2)}`
-      );
-    }
-
-    // Create wallet payment record
-    await transaction(async (client) => {
-      // Create unlock payment
-      const paymentResult = await client.query(`
-        INSERT INTO payments (
-          user_id, amount, currency, payment_method,
-          purpose, reference_id, reference_type, status
-        ) VALUES ($1, $2, 'USD', 'wallet', 'unlock', $3, 'load', 'confirmed')
-        RETURNING id
-      `, [userId, price, loadId]);
-
-      const paymentId = paymentResult.rows[0].id;
-
-      // Debit wallet
-      const walletResult = await client.query(
-        'SELECT id FROM wallets WHERE user_id = $1 FOR UPDATE',
-        [userId]
-      );
-      const wallet = walletResult.rows[0];
-
-      const balanceBefore = await client.query(
-        'SELECT balance FROM wallets WHERE user_id = $1',
-        [userId]
-      );
-
-      const newBalance = parseFloat(balanceBefore.rows[0].balance) - price;
-
-      await client.query(
-        'UPDATE wallets SET balance = $1, total_debited = total_debited + $2, last_transaction_at = NOW() WHERE user_id = $3',
-        [newBalance, price, userId]
-      );
-
-      // Create wallet transaction
-      await client.query(`
-        INSERT INTO wallet_transactions (
-          wallet_id, type, amount, balance_before, balance_after,
-          reference_type, reference_id, description, payment_id
-        ) VALUES ($1, 'debit', $2, $3, $4, 'unlock', $5, $6, $7)
-      `, [
-        wallet.id,
-        price,
-        parseFloat(balanceBefore.rows[0].balance),
-        newBalance,
-        loadId,
-        `Unlock load ${load.public_id}`,
-        paymentId,
-      ]);
-
-      // Create unlock record
-      const expiresAt = new Date(Date.now() + config.pricing.unlock_duration_hours * 60 * 60 * 1000);
-      const unlockResult = await client.query(`
-        INSERT INTO contact_unlocks (
-          user_id, load_id, payment_id,
-          phone, whatsapp, broker_name, broker_company, broker_email,
-          access_expires_at, device_fingerprint, ip_address, user_agent
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-        RETURNING id, access_expires_at
-      `, [
-        userId,
-        loadId,
-        paymentId,
-        load.parsed_phone || load.raw_phone,
-        load.parsed_whatsapp || load.raw_whatsapp,
-        load.broker_name,
-        load.broker_company,
-        load.broker_email,
-        expiresAt,
-        deviceFingerprint,
-        ipAddress,
-        userAgent,
-      ]);
-
-      return unlockResult.rows[0];
-    });
-  } else {
-    // Use Paynow for other payment methods
-    // This would integrate with paynow service
-    const { paynowService } = await import('./paynow.js');
-
-    const unlock = await transaction(async (client) => {
-      // Create pending payment
-      const paymentResult = await client.query(`
-        INSERT INTO payments (
-          user_id, amount, currency, payment_method, payment_method_detail,
-          purpose, reference_id, reference_type, status,
-          idempotency_key
-        ) VALUES ($1, $2, 'USD', $3, $4, 'unlock', $5, 'load', 'pending', $6)
-        RETURNING id
-      `, [
-        userId,
-        price,
-        paymentMethod,
-        phoneNumber,
-        loadId,
-        uuidv4(), // idempotency key
-      ]);
-
-      const paymentId = paymentResult.rows[0].id;
-
-      // Initialize Paynow transaction
-      const txn = await paynowService.createTransaction({
-        userId,
-        amount: price,
-        currency: 'USD',
-        purpose: 'unlock',
-        referenceId: loadId,
-        referenceType: 'load',
-        paymentMethod: paymentMethod as 'ecocash' | 'onemoney' | 'zipit' | 'card',
-        phoneNumber,
-        idempotencyKey: paymentId,
-      });
-
-      // Create pending unlock (will be activated on payment confirmation)
-      const unlockResult = await client.query(`
-        INSERT INTO contact_unlocks (
-          user_id, load_id, payment_id,
-          access_expires_at, device_fingerprint, ip_address, user_agent,
-          status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
-        RETURNING id
-      `, [
-        userId,
-        loadId,
-        paymentId,
-        new Date(), // Temporary, will be updated on payment
-        deviceFingerprint,
-        ipAddress,
-        userAgent,
-      ]);
-
-      return unlockResult.rows[0];
-    });
-
-    // Payment is pending - return payment info
-    throw new BadRequestError('Payment required', 'PAYMENT_REQUIRED', [
-      { field: 'payment', message: 'Complete payment to unlock', code: 'payment_required' },
-    ]);
+  // Check credits
+  const creditConsumption = await consumeCredit(userId);
+  if (!creditConsumption) {
+    throw new InsufficientFundsError(
+      'No unlock credits available. Purchase a bundle to unlock contacts.',
+      'NO_CREDITS'
+    );
   }
 
-  // Get final unlock record
-  const finalUnlock = await query(
-    'SELECT * FROM contact_unlocks WHERE user_id = $1 AND load_id = $2 ORDER BY created_at DESC LIMIT 1',
-    [userId, loadId]
-  );
+  // Create unlock record
+  const expiresAt = new Date(Date.now() + PRICING_CONFIG.UNLOCK_DURATION_HOURS * 60 * 60 * 1000);
 
-  const unlock = finalUnlock.rows[0];
+  const result = await query(`
+    INSERT INTO contact_unlocks (
+      user_id, load_id, unlock_bundle_id, price_at_unlock,
+      phone, whatsapp, broker_name, broker_company, broker_email,
+      access_expires_at, device_fingerprint, ip_address, user_agent, status
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'active')
+    RETURNING id, access_expires_at
+  `, [
+    userId,
+    loadId,
+    creditConsumption.bundleId,
+    creditConsumption.bundleType === 'single' ? 3.50 : 0, // Track price for single vs bundle
+    load.parsed_phone || load.raw_phone,
+    load.parsed_whatsapp || load.raw_whatsapp,
+    load.broker_name,
+    load.broker_company,
+    load.broker_email,
+    expiresAt,
+    deviceFingerprint,
+    ipAddress,
+    userAgent,
+  ]);
+
+  const unlock = result.rows[0];
 
   // Increment load unlock count
   await loadModel.incrementUnlockCount(loadId);
 
+  // Get updated credits
+  const credits = await getUserCredits(userId);
+
   // Send notification
   await notificationService.notifyLoadUnlocked(userId, load);
 
-  logger.info('Contact unlocked', {
+  logger.info('Contact unlocked via bundle', {
     unlockId: unlock.id,
     userId,
     loadId,
-    price,
-    paymentMethod,
+    bundleType: creditConsumption.bundleType,
+    bundleId: creditConsumption.bundleId,
+    creditsRemaining: credits.totalCredits,
   });
 
   return {
     unlockId: unlock.id,
     accessExpiresAt: new Date(unlock.access_expires_at),
     contact: {
-      phone: unlock.phone,
-      whatsapp: unlock.whatsapp,
-      brokerName: unlock.broker_name,
-      brokerCompany: unlock.broker_company,
-      brokerEmail: unlock.broker_email,
+      phone: load.parsed_phone || load.raw_phone,
+      whatsapp: load.parsed_whatsapp || load.raw_whatsapp,
+      brokerName: load.broker_name,
+      brokerCompany: load.broker_company,
+      brokerEmail: load.broker_email,
     },
+    creditsRemaining: credits.totalCredits,
   };
 };
 
@@ -535,13 +686,80 @@ export const activateUnlockAfterPayment = async (paymentId: string): Promise<voi
   logger.info('Unlock activated after payment', { unlockId: unlock.id, paymentId });
 };
 
+/**
+ * Activate bundle after payment confirmation
+ */
+export const activateBundleAfterPayment = async (paymentId: string): Promise<void> => {
+  const paymentResult = await query(
+    'SELECT * FROM payments WHERE id = $1 AND status = $2 AND purpose = $3',
+    [paymentId, 'confirmed', 'bundle_purchase']
+  );
+
+  const payment = paymentResult.rows[0];
+  if (!payment) return;
+
+  // Get pending bundle
+  const bundleResult = await query(
+    'SELECT * FROM unlock_bundles WHERE payment_id = $1 AND is_active = FALSE',
+    [paymentId]
+  );
+
+  const bundle = bundleResult.rows[0];
+  if (!bundle) return;
+
+  // Activate bundle
+  await query(`
+    UPDATE unlock_bundles
+    SET is_active = TRUE,
+        unlocks_remaining = total_unlocks
+    WHERE id = $1
+  `, [bundle.id]);
+
+  logger.info('Bundle activated after payment', { bundleId: bundle.id, paymentId });
+};
+
+/**
+ * Get user's purchased bundles
+ */
+export const getUserBundles = async (userId: string): Promise<any[]> => {
+  const result = await query(`
+    SELECT
+      ub.*,
+      p.status as payment_status,
+      p.created_at as purchased_at
+    FROM unlock_bundles ub
+    JOIN payments p ON ub.payment_id = p.id
+    WHERE ub.user_id = $1
+    ORDER BY ub.created_at DESC
+  `, [userId]);
+
+  return result.rows.map(row => ({
+    id: row.id,
+    publicId: row.public_id,
+    bundleType: row.bundle_type,
+    bundleName: row.bundle_name,
+    totalUnlocks: row.total_unlocks,
+    unlocksRemaining: row.unlocks_remaining,
+    unlocksUsed: row.unlocks_used,
+    pricePaid: row.price_paid,
+    isActive: row.is_active,
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+    paymentStatus: row.payment_status,
+  }));
+};
+
 export default {
   calculateUnlockPrice,
   getUnlockPrice,
+  getUserCredits,
+  purchaseBundle,
   unlockContact,
   checkUnlockStatus,
   getUserUnlocks,
   expireOldUnlocks,
   getUnlockCountByUser,
   activateUnlockAfterPayment,
+  activateBundleAfterPayment,
+  getUserBundles,
 };

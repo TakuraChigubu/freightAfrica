@@ -9,6 +9,7 @@ const LoadsPage = lazy(() => import('./pages/LoadsPage'));
 const LoadDetailPage = lazy(() => import('./pages/LoadDetailPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const RegisterPage = lazy(() => import('./pages/RegisterPage'));
+const PricingPage = lazy(() => import('./pages/PricingPage'));
 
 // Loading spinner component
 const LoadingSpinner: React.FC = () => (
@@ -46,6 +47,7 @@ function App() {
             <Route path="/loads/:id" element={<LoadDetailPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
+            <Route path="/pricing" element={<PricingPage />} />
 
             {/* Protected routes */}
             <Route

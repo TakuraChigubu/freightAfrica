@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { MapPin, Truck, Calendar, Package, DollarSign, Clock, Phone, User, Building, TriangleAlert as AlertTriangle, Lock, ChevronLeft } from 'lucide-react';
 import Button from '../../components/Button';
-import { loadsApi, unlockApi } from '../../services/api';
+import { loadsApi, unlockApi, pricingApi } from '../../services/api';
 import type { Load, UnlockResult } from '../../types';
 import './LoadDetailPage.css';
 
@@ -17,15 +17,26 @@ const LoadDetailPage: React.FC = () => {
   const [unlockResult, setUnlockResult] = useState<UnlockResult | null>(null);
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [_error, setError] = useState<string | null>(null);
+  const [userCredits, setUserCredits] = useState(0);
 
   useEffect(() => {
     if (id) {
       fetchLoad(id);
+      loadCredits();
       if (searchParams.get('unlock') === 'true') {
         handleUnlock();
       }
     }
   }, [id]);
+
+  const loadCredits = async () => {
+    try {
+      const credits = await pricingApi.getCredits();
+      setUserCredits(credits.totalCredits);
+    } catch (e) {
+      // Not logged in or no credits
+    }
+  };
 
   const fetchLoad = async (loadId: string) => {
     try {
@@ -59,11 +70,15 @@ const LoadDetailPage: React.FC = () => {
 
     setIsUnlocking(true);
     try {
-      const result = await unlockApi.unlock(load.id, 'wallet');
+      const result = await unlockApi.unlock(load.id);
       setUnlockResult(result);
       setIsUnlocked(true);
     } catch (err: any) {
-      setError(err.message || 'Failed to unlock. Please try again.');
+      if (err.message?.includes('No unlock credits') || err.code === 'NO_CREDITS') {
+        navigate('/pricing', { state: { loadId: load.id } });
+      } else {
+        setError(err.message || 'Failed to unlock. Please try again.');
+      }
     } finally {
       setIsUnlocking(false);
     }
@@ -314,19 +329,38 @@ const LoadDetailPage: React.FC = () => {
                     Unlock to view broker contact details and connect directly
                   </p>
 
-                  <div className="unlock-price">
-                    <span className="unlock-price-value">$2.00</span>
-                    <span className="unlock-price-label">one-time fee</span>
-                  </div>
+                  {userCredits > 0 ? (
+                    <>
+                      <div className="unlock-credits">
+                        <span className="credits-amount">{userCredits}</span>
+                        <span className="credits-label">credits available</span>
+                      </div>
 
-                  <Button
-                    variant="primary"
-                    fullWidth
-                    onClick={handleUnlock}
-                    isLoading={isUnlocking}
-                  >
-                    Unlock Contact
-                  </Button>
+                      <Button
+                        variant="primary"
+                        fullWidth
+                        onClick={handleUnlock}
+                        isLoading={isUnlocking}
+                      >
+                        Use 1 Credit to Unlock
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <div className="unlock-price">
+                        <span className="unlock-price-value">From $3.33</span>
+                        <span className="unlock-price-label">per unlock</span>
+                      </div>
+
+                      <Button
+                        variant="primary"
+                        fullWidth
+                        onClick={() => navigate('/pricing')}
+                      >
+                        Buy Credits to Unlock
+                      </Button>
+                    </>
+                  )}
 
                   <p className="unlock-note">
                     24-hour access to contact details

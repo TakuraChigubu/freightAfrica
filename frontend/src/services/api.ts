@@ -175,8 +175,8 @@ export const unlockApi = {
     return response.data.data;
   },
 
-  unlock: async (loadId: string, paymentMethod: string, phoneNumber?: string) => {
-    const response = await api.post(`/unlock/${loadId}`, { paymentMethod, phoneNumber });
+  unlock: async (loadId: string) => {
+    const response = await api.post(`/unlock/${loadId}`);
     return response.data.data;
   },
 
@@ -188,6 +188,29 @@ export const unlockApi = {
   getMy: async (params: { page?: number; limit?: number; activeOnly?: boolean }) => {
     const response = await api.get('/unlock/my', { params });
     return response.data as PaginatedResponse<import('../types').UnlockResult>;
+  },
+};
+
+// Pricing API
+export const pricingApi = {
+  getPricing: async () => {
+    const response = await api.get('/pricing');
+    return response.data.data as import('../types').PricingInfo;
+  },
+
+  getCredits: async () => {
+    const response = await api.get('/pricing/credits');
+    return response.data.data as import('../types').UserCredits;
+  },
+
+  purchaseBundle: async (data: {
+    bundleType: string;
+    paymentMethod: 'ecocash' | 'onemoney' | 'zipit' | 'card' | 'wallet';
+    phoneNumber?: string;
+    idempotencyKey?: string;
+  }) => {
+    const response = await api.post('/pricing/purchase', data);
+    return response.data.data as import('../types').BundlePurchaseResult;
   },
 };
 

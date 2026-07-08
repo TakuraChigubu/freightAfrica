@@ -140,6 +140,68 @@ export interface UnlockResult {
   };
 }
 
+// Pricing Types
+export interface PricingBundle {
+  id: string;
+  name: string;
+  unlocks: number;
+  price: number;
+  pricePerUnlock: number;
+  savingsPercent: number;
+  description: string;
+  isDefault: boolean;
+  paynowFeeRatio: number;
+}
+
+export interface PricingInfo {
+  bundles: PricingBundle[];
+  costFloor: {
+    costPerLoad: number;
+    minimumViablePrice: number;
+  };
+  paynowFees: {
+    flatFee: number;
+    percentageFee: number;
+    singleUnlockFee: number;
+    bundleFee: number;
+  };
+  unlockDurationHours: number;
+}
+
+export interface UserCredits {
+  totalCredits: number;
+  activeBundles: Array<{
+    id: string;
+    bundleType: string;
+    remaining: number;
+    expiresAt: string | null;
+  }>;
+  bundleHistory: Array<{
+    id: string;
+    publicId: string;
+    bundleType: string;
+    bundleName: string;
+    totalUnlocks: number;
+    unlocksRemaining: number;
+    unlocksUsed: number;
+    pricePaid: number;
+    isActive: boolean;
+    expiresAt: string | null;
+    createdAt: string;
+    paymentStatus: string;
+  }>;
+}
+
+export interface BundlePurchaseResult {
+  bundleId: string;
+  publicId: string;
+  paymentStatus: 'pending' | 'confirmed';
+  paymentId: string;
+  paynowPollUrl?: string;
+  paynowRedirectUrl?: string;
+  message: string;
+}
+
 // Form Types
 export interface LoadFilters {
   originCountry?: string;
