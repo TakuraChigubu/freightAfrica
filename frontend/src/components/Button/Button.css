@@ -84,6 +84,15 @@
   background-color: var(--color-error-600);
 }
 
+.btn--success {
+  background-color: var(--color-success-500, #10b981);
+  color: var(--color-neutral-0);
+}
+
+.btn--success:hover:not(:disabled) {
+  background-color: var(--color-success-600, #059669);
+}
+
 .btn--full-width {
   width: 100%;
 }

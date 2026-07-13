@@ -445,8 +445,126 @@ export const logParsingUsage = async (
   }
 };
 
+/**
+ * Parse bulk/chain freight messages
+ * Extracts multiple loads from a single pasted message
+ */
+export const parseBulkMessages = async (messageText) => {
+  const BULK_PROMPT = `You are parsing a chain message containing multiple freight load listings. Extract each individual load.
+
+The message may contain:
+- Multiple loads separated by newlines, dashes, or other delimiters
+- Repeated patterns for origin, destination, price, contact
+- Mixed formatting
+
+Extract each load separately and return as a JSON array.
+
+Respond with JSON only:
+{
+  "loads": [
+    {
+      "origin": "string",
+      "destination": "string",
+      "originCountry": "country code or null",
+      "destinationCountry": "country code or null",
+      "cargoType": "string or null",
+      "truckType": "string or null",
+      "weightKg": number or null,
+      "numberOfTrucks": number or null,
+      "pickupDate": "YYYY-MM-DD or null",
+      "deliveryDate": "YYYY-MM-DD or null",
+      "price": number or null,
+      "currency": "string",
+      "pricePerTon": number or null,
+      "priceNegotiable": boolean,
+      "contactPhone": "string or null",
+      "contactWhatsapp": "string or null",
+      "brokerName": "string or null",
+      "brokerCompany": "string or null",
+      "description": "string or null"
+    }
+  ],
+  "confidence": number (0-100),
+  "parsingNotes": "string"
+}`;
+
+  try {
+    const result = await model.generateContent([
+      { text: BULK_PROMPT },
+      { text: `Parse this chain message and extract all loads:\n\n${messageText}` }
+    ]);
+
+    const text = result.response.text();
+    const cleanedText = text.replace(/```json\n?|\n?```/g, '').trim();
+    const parsed = JSON.parse(cleanedText);
+
+    const loads = (parsed.loads || []).map(load => ({
+      ...load,
+      _confidence: parsed.confidence || 70,
+      _needsReview: (parsed.confidence || 70) < 85,
+    }));
+
+    logger.info('Bulk parsing complete', {
+      loadsFound: loads.length,
+      confidence: parsed.confidence,
+    });
+
+    return {
+      loads,
+      confidence: parsed.confidence || 70,
+      parsingNotes: parsed.parsingNotes,
+    };
+  } catch (error) {
+    logger.error('Bulk parsing failed, using fallback', { error: error.message });
+
+    // Fallback: split by common delimiters and parse individually
+    return fallbackBulkParse(messageText);
+  }
+};
+
+/**
+ * Fallback bulk parser when Gemini fails
+ */
+const fallbackBulkParse = (messageText) => {
+  const loads = [];
+
+  // Split by common separators
+  const segments = messageText.split(/\n\n+|\n---+\n|\n\*\*\*+\n/);
+
+  for (const segment of segments) {
+    if (segment.trim().length < 20) continue;
+
+    // Simple extraction patterns
+    const originMatch = segment.match(/(?:from|origin|pickup)[:\s]+([^\n,]+)/i);
+    const destMatch = segment.match(/(?:to|destination|deliver)[:\s]+([^\n,]+)/i);
+    const priceMatch = segment.match(/\$?(\d+(?:,\d+)*(?:\.\d{2})?)\s*(?:USD|usd)?/);
+    const phoneMatch = segment.match(/(\+?\d{10,15})/);
+
+    if (originMatch && destMatch) {
+      loads.push({
+        origin: originMatch[1].trim(),
+        destination: destMatch[1].trim(),
+        cargoType: null,
+        truckType: null,
+        price: priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : null,
+        currency: 'USD',
+        contactPhone: phoneMatch ? phoneMatch[1] : null,
+        _confidence: 50,
+        _needsReview: true,
+      });
+    }
+  }
+
+  return {
+    loads,
+    confidence: 50,
+    parsingNotes: 'Fallback parsing used - manual review required',
+  };
+};
+
 export default {
   parseFreightMessage,
+  parseBulkMessages,
   naturalLanguageSearch,
   getPriceSuggestion,
   analyzeForFraud,

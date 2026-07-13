@@ -9,6 +9,7 @@ export interface User {
   avatar: string | null;
   roleId: string;
   roleName: string;
+  role?: string;
   organisationId: string | null;
   emailVerified: boolean;
   permissions: string[];

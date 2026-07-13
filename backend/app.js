@@ -13,6 +13,9 @@ import authRoutes from './routes/auth.js';
 import loadRoutes from './routes/load.js';
 import unlockRoutes from './routes/unlock.js';
 import pricingRoutes from './routes/pricing.js';
+import dashboardRoutes from './routes/dashboard.js';
+import adminRoutes from './routes/admin.js';
+import marketplaceRoutes from './routes/marketplace.js';
 // import userRoutes from './routes/users.js';
 // import paymentRoutes from './routes/payments.js';
 // import webhookRoutes from './routes/webhooks.js';
@@ -136,9 +139,11 @@ apiRouter.use('/auth', authRoutes);
 apiRouter.use('/loads', loadRoutes);
 apiRouter.use('/unlock', unlockRoutes);
 apiRouter.use('/pricing', pricingRoutes);
+apiRouter.use('/dashboard', dashboardRoutes);
+apiRouter.use('/admin', adminRoutes);
+apiRouter.use('/marketplace', marketplaceRoutes);
 // apiRouter.use('/users', userRoutes);
 // apiRouter.use('/payments', paymentRoutes);
-// apiRouter.use('/admin', adminRoutes);
 // apiRouter.use('/webhooks', webhookRoutes);
 
 // API info endpoint

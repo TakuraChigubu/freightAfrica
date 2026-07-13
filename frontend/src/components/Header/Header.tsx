@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Truck, Menu, X, Bell, User, LogOut, Settings, Package, Wallet } from 'lucide-react';
+import { Truck, Menu, X, Bell, User, LogOut, Settings, Package, Wallet, CreditCard } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import Button from '../Button';
 import './Header.css';
@@ -37,8 +37,23 @@ const Header: React.FC = () => {
             Browse Loads
           </Link>
 
+          <Link
+            to="/marketplace"
+            className={`header__link ${isActive('/marketplace') ? 'header__link--active' : ''}`}
+            onClick={() => setMobileMenuOpen(false)}
+          >
+            Marketplace
+          </Link>
+
           {isAuthenticated && (
             <>
+              <Link
+                to="/dashboard"
+                className={`header__link ${isActive('/dashboard') ? 'header__link--active' : ''}`}
+                onClick={() => setMobileMenuOpen(false)}
+              >
+                Dashboard
+              </Link>
               <Link
                 to="/my-loads"
                 className={`header__link ${isActive('/my-loads') ? 'header__link--active' : ''}`}
@@ -53,6 +68,15 @@ const Header: React.FC = () => {
               >
                 Post Load
               </Link>
+              {user?.role === 'admin' && (
+                <Link
+                  to="/admin"
+                  className={`header__link ${isActive('/admin') ? 'header__link--active' : ''}`}
+                  onClick={() => setMobileMenuOpen(false)}
+                >
+                  Admin
+                </Link>
+              )}
             </>
           )}
         </nav>
@@ -94,6 +118,15 @@ const Header: React.FC = () => {
                     >
                       <Settings size={18} />
                       <span>Settings</span>
+                    </Link>
+
+                    <Link
+                      to="/pricing"
+                      className="header__menu-item"
+                      onClick={() => setProfileMenuOpen(false)}
+                    >
+                      <CreditCard size={18} />
+                      <span>Buy Credits</span>
                     </Link>
 
                     <Link
